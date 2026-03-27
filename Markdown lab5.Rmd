@@ -1,0 +1,191 @@
+---
+title: "LAB5"
+author: "Jose Sanchez, Andre Pivaral , Roberto Najera "
+date: "2026-03-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Preparación de datos
+
+```{r carga}
+library(e1071)
+library(caret)
+library(dplyr)
+library(ggplot2)
+
+# Cargar el RData y obtener el objeto sin importar su nombre
+objetos_antes <- ls()
+load("listings_limpio.RData")
+objetos_nuevo <- setdiff(ls(), c(objetos_antes, "objetos_antes"))
+cat("Objeto cargado:", objetos_nuevo, "\n")
+
+# Asignar a df directamente
+df <- get(objetos_nuevo[1])
+
+# Ver estructura del dataset
+glimpse(df)
+```
+
+```{r preprocesamiento}
+# df ya está asignado arriba
+
+# Asegurar que price es numérico (en datasets de Airbnb puede venir como character con "$")
+if (is.character(df$price)) {
+  df$price <- as.numeric(gsub("[$,]", "", df$price))
+}
+
+# Eliminar filas con NA en price
+df <- df %>% filter(!is.na(price) & price > 0)
+
+summary(df$price)
+```
+
+## 1. Modelo de Regresión con Naive Bayes
+
+Naive Bayes es originalmente un algoritmo de clasificación. Para usarlo como modelo predictivo sobre el precio (variable continua), se discretiza el precio en categorías basadas en cuartiles, permitiendo comparar el desempeño con los modelos anteriores.
+
+```{r discretizar_precio}
+# Discretizar price en 4 categorías usando cuartiles
+cuartiles <- quantile(df$price, probs = c(0, 0.25, 0.5, 0.75, 1))
+cat("Cuartiles del precio:\n")
+print(cuartiles)
+
+df$price_cat <- cut(
+  df$price,
+  breaks = cuartiles,
+  labels = c("Bajo", "Medio-bajo", "Medio-alto", "Alto"),
+  include.lowest = TRUE
+)
+
+cat("\nDistribución de categorías de precio:\n")
+print(table(df$price_cat))
+```
+
+```{r split}
+# Mismo split que los labs anteriores: set.seed(42), 70% entrenamiento / 30% prueba
+set.seed(42)
+indice <- createDataPartition(df$price_cat, p = 0.70, list = FALSE)
+
+train <- df[indice, ]
+test  <- df[-indice, ]
+
+cat("Filas en entrenamiento:", nrow(train), "\n")
+cat("Filas en prueba:", nrow(test), "\n")
+```
+
+```{r seleccion_variables}
+# Seleccionar variables predictoras numéricas y categóricas relevantes
+# (ajustar según las columnas disponibles en el dataset)
+vars_numericas <- c("accommodates", "bedrooms", "bathrooms", "beds",
+                    "number_of_reviews", "review_scores_rating",
+                    "minimum_nights", "calculated_host_listings_count")
+
+vars_categoricas <- c("room_type", "neighbourhood_cleansed")
+
+# Filtrar solo las que existen en el dataframe
+vars_numericas   <- vars_numericas[vars_numericas %in% names(df)]
+vars_categoricas <- vars_categoricas[vars_categoricas %in% names(df)]
+vars_modelo      <- c(vars_numericas, vars_categoricas)
+
+cat("Variables usadas en el modelo:\n")
+print(vars_modelo)
+
+# Subsets limpios (sin NA en variables del modelo)
+train_nb <- train %>% select(all_of(c(vars_modelo, "price_cat"))) %>% na.omit()
+test_nb  <- test  %>% select(all_of(c(vars_modelo, "price_cat"))) %>% na.omit()
+```
+
+```{r entrenar_modelo}
+# Entrenar modelo Naive Bayes
+modelo_nb <- naiveBayes(price_cat ~ ., data = train_nb)
+modelo_nb
+```
+
+**Interpretación del modelo:** El modelo Naive Bayes calcula, para cada categoría de precio, la probabilidad a priori y la distribución de cada variable predictora. Se asume independencia condicional entre las variables dado el precio. Las tablas de probabilidades condicionales muestran, por ejemplo, qué valores de `accommodates` o `room_type` son más comunes en listings baratos versus caros.
+
+## 2. Predicción y Análisis de Resultados
+
+```{r prediccion}
+# Predecir en el conjunto de prueba
+pred_nb <- predict(modelo_nb, newdata = test_nb)
+
+# Tabla de confusión
+conf_matrix <- confusionMatrix(pred_nb, test_nb$price_cat)
+print(conf_matrix)
+```
+
+### Métricas de desempeño
+
+```{r metricas}
+# Accuracy global
+accuracy <- conf_matrix$overall["Accuracy"]
+cat("Accuracy:", round(accuracy, 4), "\n\n")
+
+# Precision, Recall y F1 por clase
+metricas_clase <- data.frame(
+  Clase     = rownames(conf_matrix$byClass),
+  Precision = round(conf_matrix$byClass[, "Precision"], 4),
+  Recall    = round(conf_matrix$byClass[, "Recall"],    4),
+  F1        = round(conf_matrix$byClass[, "F1"],        4)
+)
+print(metricas_clase)
+```
+
+```{r visualizacion_cm, fig.width=7, fig.height=5}
+# Visualizar la matriz de confusión
+cm_df <- as.data.frame(conf_matrix$table)
+colnames(cm_df) <- c("Predicho", "Real", "Frecuencia")
+
+ggplot(cm_df, aes(x = Real, y = Predicho, fill = Frecuencia)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Frecuencia), size = 5, fontface = "bold") +
+  scale_fill_gradient(low = "#deebf7", high = "#2171b5") +
+  labs(title = "Matriz de Confusión - Naive Bayes",
+       x = "Categoría Real", y = "Categoría Predicha") +
+  theme_minimal()
+```
+
+```{r distribucion_predicciones, fig.width=7, fig.height=4}
+# Distribución de predicciones vs valores reales
+comparacion <- data.frame(
+  Real     = test_nb$price_cat,
+  Predicho = pred_nb
+)
+
+ggplot(comparacion, aes(x = Real, fill = Predicho)) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Proporción de predicciones por categoría real",
+       x = "Categoría Real de Precio",
+       y = "Proporción",
+       fill = "Predicho") +
+  theme_minimal()
+```
+
+### Interpretación de resultados
+
+```{r interpretacion}
+cat("=== RESUMEN DE DESEMPEÑO ===\n\n")
+cat("Accuracy:", round(accuracy, 4), "->",
+    ifelse(accuracy >= 0.7, "Desempeño aceptable",
+    ifelse(accuracy >= 0.5, "Desempeño moderado", "Desempeño bajo")), "\n\n")
+
+cat("Kappa:", round(conf_matrix$overall["Kappa"], 4),
+    "-> mide el acuerdo más allá del azar\n\n")
+
+mejor_clase <- metricas_clase$Clase[which.max(metricas_clase$F1)]
+peor_clase  <- metricas_clase$Clase[which.min(metricas_clase$F1)]
+cat("Mejor clase predicha (mayor F1):", mejor_clase, "\n")
+cat("Peor clase predicha (menor F1):", peor_clase, "\n")
+```
+
+**Análisis:** El modelo Naive Bayes predice las categorías de precio con un accuracy de aproximadamente `r round(accuracy*100, 1)`%. Dado que el modelo asume independencia entre variables (supuesto que rara vez se cumple en datos reales de Airbnb), su desempeño es una línea base útil de comparación frente a modelos más complejos usados en labs anteriores.
+
+- Las categorías extremas (**Bajo** y **Alto**) tienden a clasificarse mejor porque sus distribuciones son más distinguibles.
+- Las categorías intermedias (**Medio-bajo** y **Medio-alto**) presentan mayor confusión, ya que los precios en esos rangos comparten características similares.
+- Un Kappa mayor a 0.4 indica que el modelo aprende patrones reales más allá del azar.
+- Las métricas correctas para este tipo de problema de clasificación ordinal son: **Accuracy**, **Kappa**, **Precision**, **Recall** y **F1-score** por clase — no RMSE, ya que la variable respuesta fue discretizada.
