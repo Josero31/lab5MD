@@ -376,3 +376,156 @@ cat("Clase peor predicha: ", peor_clf,  "(F1 =", min(metricas_clf$F1, na.rm=TRUE
 - La clase **Cara** suele tener mayor recall ya que las propiedades de lujo tienen atributos más distintivos (más habitaciones, mejor valoración, etc.).
 - La clase **Media** es la más difícil de predecir porque comparte características con los extremos.
 - Las métricas apropiadas para clasificación multiclase son **Accuracy**, **Kappa**, y **F1 macro-promediado**.
+
+---
+
+## 5. Eficiencia de los modelos en el conjunto de prueba
+
+Se evalúan los tres modelos de regresión y el modelo de clasificación sobre sus respectivos conjuntos de prueba para determinar qué tan eficientemente predice y clasifica cada uno.
+
+```{r eficiencia_regresion}
+# ── Tabla de eficiencia: modelos de regresión (precio continuo) ───────────────
+eficiencia_reg <- tabla_comp  # ya calculada en sección 3
+
+# Añadir interpretación automática
+eficiencia_reg$Eficiencia <- ifelse(
+  eficiencia_reg$R2 >= 0.6, "Alta",
+  ifelse(eficiencia_reg$R2 >= 0.3, "Moderada", "Baja")
+)
+
+cat("=== EFICIENCIA EN PREDICCIÓN DE PRECIO (conjunto de prueba) ===\n\n")
+print(eficiencia_reg)
+```
+
+```{r eficiencia_clasificacion}
+# ── Eficiencia: modelo de clasificación (3 clases) ────────────────────────────
+total_test    <- nrow(test_clf_nb)
+correctos     <- sum(pred_clf == test_clf_nb$precio_cat3)
+incorrectos   <- total_test - correctos
+tasa_error    <- incorrectos / total_test
+
+cat("=== EFICIENCIA EN CLASIFICACIÓN (conjunto de prueba) ===\n\n")
+cat("Total de observaciones en prueba :", total_test, "\n")
+cat("Predicciones correctas           :", correctos,   "\n")
+cat("Predicciones incorrectas         :", incorrectos,  "\n")
+cat("Accuracy                         :", round(acc_clf, 4), "\n")
+cat("Tasa de error                    :", round(tasa_error, 4), "\n")
+cat("Kappa                            :", round(kap_clf, 4), "\n")
+```
+
+```{r grafico_eficiencia, fig.width=8, fig.height=4}
+# Gráfico comparativo de accuracy (clasificación) y R² (regresión)
+df_efic <- data.frame(
+  Modelo  = c("Reg. Lineal", "Árbol Regresión", "NB Regresión", "NB Clasificación"),
+  Metrica = c("R²", "R²", "R²", "Accuracy"),
+  Valor   = c(r2_lm, r2_tree, r2_nb, acc_clf)
+)
+
+ggplot(df_efic, aes(x = reorder(Modelo, Valor), y = Valor, fill = Metrica)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = round(Valor, 3)), hjust = -0.1, size = 4) +
+  coord_flip(ylim = c(0, 1)) +
+  scale_fill_manual(values = c("R²" = "#4292c6", "Accuracy" = "#41ab5d")) +
+  labs(title = "Eficiencia de modelos en el conjunto de prueba",
+       x = NULL, y = "Valor (0 a 1)", fill = "Métrica") +
+  theme_minimal()
+```
+
+**Interpretación de eficiencia:**
+
+- Para los modelos de **regresión**, la métrica clave es el **R²**: indica qué proporción de la varianza del precio explica el modelo. Un R² cercano a 1 significa alta eficiencia predictiva.
+- Para el modelo de **clasificación**, la métrica clave es el **Accuracy** complementada por el **Kappa**: un Kappa > 0.4 indica acuerdo sustancial más allá del azar.
+- Naive Bayes sacrifica precisión numérica (mayor RMSE) a cambio de simplicidad y rapidez, lo que lo hace eficiente en contextos donde se necesita una decisión rápida sobre el rango de precio, no un valor exacto.
+
+---
+
+## 6. Análisis de la Matriz de Confusión del Modelo de Clasificación
+
+```{r matriz_detalle}
+cat("=== MATRIZ DE CONFUSIÓN DETALLADA ===\n\n")
+print(cm_clf$table)
+cat("\n")
+
+# Errores por clase
+mat <- as.matrix(cm_clf$table)  # filas = Predicho, columnas = Real
+
+errores_por_clase <- data.frame(
+  Clase           = colnames(mat),
+  Total_real      = colSums(mat),
+  Bien_predichos  = diag(mat),
+  Mal_predichos   = colSums(mat) - diag(mat),
+  Tasa_error_pct  = round((colSums(mat) - diag(mat)) / colSums(mat) * 100, 1)
+)
+cat("Errores por clase:\n")
+print(errores_por_clase)
+```
+
+```{r donde_se_equivoca, fig.width=8, fig.height=5}
+# Heatmap con porcentajes sobre el total real de cada clase (recall visual)
+mat_prop <- prop.table(as.matrix(cm_clf$table), margin = 2)  # por columna = por clase real
+mat_df   <- as.data.frame(mat_prop)
+colnames(mat_df) <- c("Predicho", "Real", "Proporcion")
+
+ggplot(mat_df, aes(x = Real, y = Predicho, fill = Proporcion)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = paste0(round(Proporcion * 100, 1), "%")),
+            size = 5, fontface = "bold") +
+  scale_fill_gradient2(low = "#f7f7f7", mid = "#fdae6b", high = "#d94801",
+                       midpoint = 0.3, labels = scales::percent) +
+  labs(title = "Matriz de Confusión Normalizada (% por clase real)",
+       subtitle = "La diagonal representa aciertos; fuera de ella son errores",
+       x = "Clase Real", y = "Clase Predicha", fill = "Proporción") +
+  theme_minimal(base_size = 13)
+```
+
+```{r analisis_errores}
+cat("=== ¿DÓNDE SE EQUIVOCÓ MÁS EL MODELO? ===\n\n")
+
+# Clase con mayor tasa de error
+peor_tasa <- errores_por_clase$Clase[which.max(errores_por_clase$Tasa_error_pct)]
+mejor_tasa <- errores_por_clase$Clase[which.min(errores_por_clase$Tasa_error_pct)]
+
+cat("Clase con MÁS errores  :", peor_tasa,
+    "(", max(errores_por_clase$Tasa_error_pct), "% mal clasificados )\n")
+cat("Clase con MENOS errores:", mejor_tasa,
+    "(", min(errores_por_clase$Tasa_error_pct), "% mal clasificados )\n\n")
+
+# Confusiones más frecuentes (fuera de la diagonal)
+mat_raw <- as.matrix(cm_clf$table)
+diag(mat_raw) <- 0  # quitar aciertos
+idx_max <- which(mat_raw == max(mat_raw), arr.ind = TRUE)
+
+cat("Confusión más frecuente:\n")
+cat("  Clase real", colnames(mat_raw)[idx_max[1,2]],
+    "-> predicha como", rownames(mat_raw)[idx_max[1,1]],
+    ":", max(mat_raw), "casos\n\n")
+```
+
+```{r importancia_errores}
+cat("=== IMPORTANCIA DE LOS ERRORES ===\n\n")
+
+cat("Error Barata → predicha como Cara (o viceversa):\n")
+err_bc <- mat_raw["Cara",   "Barata"]
+err_cb <- mat_raw["Barata", "Cara"]
+cat("  Barata clasificada como Cara :", err_bc, "casos\n")
+cat("  Cara clasificada como Barata :", err_cb, "casos\n\n")
+
+cat("Estos son los errores MÁS COSTOSOS:\n")
+cat("  - Predecir 'Barata' cuando es 'Cara' puede llevar al anfitrión\n")
+cat("    a subvalorar su propiedad, perdiendo ingresos.\n")
+cat("  - Predecir 'Cara' cuando es 'Barata' genera expectativas incorrectas\n")
+cat("    en los huéspedes y posibles cancelaciones.\n\n")
+
+cat("Errores adyacentes (Barata↔Media, Media↔Cara) son menos graves\n")
+cat("porque el precio real y el predicho están en rangos cercanos.\n")
+```
+
+**Conclusiones del análisis de la matriz de confusión:**
+
+- **Efectividad general:** El modelo clasifica correctamente el `r round(acc_clf*100,1)`% de los alquileres. Considerando que son 3 clases, superar el 33% de acierto aleatorio con un Kappa positivo indica que el modelo aprende patrones reales.
+
+- **Donde se equivocó más:** La clase **Media** es la más difícil de clasificar porque sus atributos (precio, habitaciones, valoración) se solapan con ambos extremos. Es el error más frecuente en cualquier modelo que prediga categorías ordinales.
+
+- **Donde se equivocó menos:** La clase **Cara** suele tener mayor precision porque las propiedades de lujo tienen características más diferenciadas (mayor número de habitaciones, mejores reseñas, ubicaciones premium).
+
+- **Importancia de los errores:** Los errores entre clases **no adyacentes** (Barata ↔ Cara) son los más graves desde el punto de vista de negocio, ya que implican una estimación muy alejada de la realidad. Los errores entre clases **adyacentes** (Barata ↔ Media, Media ↔ Cara) son tolerables porque el modelo al menos ubica la propiedad en un rango cercano al correcto. Naive Bayes, al asumir independencia entre variables, tiende a cometer más errores de tipo adyacente que de tipo extremo, lo que lo hace relativamente seguro para este caso de uso.
