@@ -189,3 +189,190 @@ cat("Peor clase predicha (menor F1):", peor_clase, "\n")
 - Las categorías intermedias (**Medio-bajo** y **Medio-alto**) presentan mayor confusión, ya que los precios en esos rangos comparten características similares.
 - Un Kappa mayor a 0.4 indica que el modelo aprende patrones reales más allá del azar.
 - Las métricas correctas para este tipo de problema de clasificación ordinal son: **Accuracy**, **Kappa**, **Precision**, **Recall** y **F1-score** por clase — no RMSE, ya que la variable respuesta fue discretizada.
+
+---
+
+## 3. Comparación con Regresión Lineal y Árbol de Regresión
+
+Para comparar los tres modelos de forma justa, se re-entrena la regresión lineal y el árbol de regresión con el **mismo split** (set.seed(42), 70/30) y se evalúa sobre el mismo conjunto de prueba usando RMSE, MAE y R².
+Para Naive Bayes, se convierte la categoría predicha a un valor numérico usando el **punto medio** de cada rango, permitiendo calcular las mismas métricas de regresión.
+
+```{r comparacion_regresion}
+library(rpart)
+
+# Dataset con el mismo split pero usando price continuo
+train_reg <- train %>% select(all_of(c(vars_modelo, "price"))) %>% na.omit()
+test_reg  <- test  %>% select(all_of(c(vars_modelo, "price"))) %>% na.omit()
+
+# ── Regresión Lineal ──────────────────────────────────────────────────────────
+modelo_lm <- lm(price ~ ., data = train_reg)
+
+pred_lm  <- predict(modelo_lm, newdata = test_reg)
+rmse_lm  <- sqrt(mean((test_reg$price - pred_lm)^2))
+mae_lm   <- mean(abs(test_reg$price - pred_lm))
+r2_lm    <- cor(test_reg$price, pred_lm)^2
+
+# ── Árbol de Regresión ───────────────────────────────────────────────────────
+modelo_tree <- rpart(price ~ ., data = train_reg, method = "anova")
+
+pred_tree <- predict(modelo_tree, newdata = test_reg)
+rmse_tree <- sqrt(mean((test_reg$price - pred_tree)^2))
+mae_tree  <- mean(abs(test_reg$price - pred_tree))
+r2_tree   <- cor(test_reg$price, pred_tree)^2
+
+# ── Naive Bayes → aproximar precio continuo con punto medio del rango ────────
+puntos_medio <- c(
+  "Bajo"       = (cuartiles[1] + cuartiles[2]) / 2,
+  "Medio-bajo" = (cuartiles[2] + cuartiles[3]) / 2,
+  "Medio-alto" = (cuartiles[3] + cuartiles[4]) / 2,
+  "Alto"       = (cuartiles[4] + cuartiles[5]) / 2
+)
+
+# Predecir NB sobre el subset test_reg (que puede diferir de test_nb por los NA)
+test_reg_nb <- test_reg %>%
+  mutate(price_cat = cut(price, breaks = cuartiles,
+                         labels = c("Bajo","Medio-bajo","Medio-alto","Alto"),
+                         include.lowest = TRUE))
+
+pred_nb_cont <- puntos_medio[as.character(predict(modelo_nb, newdata = test_reg_nb))]
+
+rmse_nb <- sqrt(mean((test_reg_nb$price - pred_nb_cont)^2))
+mae_nb  <- mean(abs(test_reg_nb$price - pred_nb_cont))
+r2_nb   <- cor(test_reg_nb$price, pred_nb_cont)^2
+
+# ── Tabla comparativa ─────────────────────────────────────────────────────────
+tabla_comp <- data.frame(
+  Modelo = c("Regresión Lineal", "Árbol de Regresión", "Naive Bayes"),
+  RMSE   = round(c(rmse_lm, rmse_tree, rmse_nb), 2),
+  MAE    = round(c(mae_lm,  mae_tree,  mae_nb),  2),
+  R2     = round(c(r2_lm,   r2_tree,   r2_nb),   4)
+)
+print(tabla_comp)
+```
+
+```{r grafico_comparacion, fig.width=8, fig.height=4}
+library(tidyr)
+
+tabla_long <- tabla_comp %>%
+  pivot_longer(cols = c(RMSE, MAE), names_to = "Metrica", values_to = "Valor")
+
+ggplot(tabla_long, aes(x = Modelo, y = Valor, fill = Modelo)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~Metrica, scales = "free_y") +
+  labs(title = "Comparación de modelos: RMSE y MAE",
+       x = NULL, y = "Error") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+**Interpretación de la comparación:**
+
+```{r mejor_modelo}
+mejor <- tabla_comp$Modelo[which.min(tabla_comp$RMSE)]
+cat("Modelo con menor RMSE (mejor predictor de precio):", mejor, "\n")
+cat("\nR² por modelo:\n")
+for (i in seq_len(nrow(tabla_comp))) {
+  cat(" -", tabla_comp$Modelo[i], "->", tabla_comp$R2[i],
+      ifelse(tabla_comp$R2[i] > 0.6, "(bueno)",
+      ifelse(tabla_comp$R2[i] > 0.3, "(moderado)", "(bajo)")), "\n")
+}
+```
+
+- El modelo con **menor RMSE y MAE** es el que mejor predice el precio real.
+- La **Regresión Lineal** suele capturar bien relaciones lineales pero es sensible a outliers en el precio.
+- El **Árbol de Regresión** captura relaciones no lineales sin necesidad de supuestos distribucionales.
+- **Naive Bayes** tiene una desventaja estructural aquí: al discretizar el precio pierde información continua, lo que eleva su error. Su punto fuerte es la interpretabilidad y velocidad, no la precisión numérica en problemas de regresión.
+
+---
+
+## 4. Modelo de Clasificación con Naive Bayes
+
+Se usa la variable categórica de precio en **tres niveles** (Barata, Media, Cara) definidos por terciles, replicando la variable creada en laboratorios anteriores.
+
+```{r crear_variable_cat3}
+terciles <- quantile(df$price, probs = c(0, 1/3, 2/3, 1))
+cat("Terciles del precio:\n")
+print(terciles)
+
+df$precio_cat3 <- cut(
+  df$price,
+  breaks  = terciles,
+  labels  = c("Barata", "Media", "Cara"),
+  include.lowest = TRUE
+)
+
+cat("\nDistribución:\n")
+print(table(df$precio_cat3))
+```
+
+```{r split_clasificacion}
+# Mismo set.seed(42), 70/30
+set.seed(42)
+idx_clf <- createDataPartition(df$precio_cat3, p = 0.70, list = FALSE)
+
+train_clf <- df[idx_clf, ]
+test_clf  <- df[-idx_clf, ]
+
+train_clf_nb <- train_clf %>%
+  select(all_of(c(vars_modelo, "precio_cat3"))) %>% na.omit()
+test_clf_nb  <- test_clf %>%
+  select(all_of(c(vars_modelo, "precio_cat3"))) %>% na.omit()
+
+cat("Entrenamiento:", nrow(train_clf_nb), "| Prueba:", nrow(test_clf_nb), "\n")
+```
+
+```{r modelo_clasificacion}
+modelo_clf <- naiveBayes(precio_cat3 ~ ., data = train_clf_nb)
+pred_clf   <- predict(modelo_clf, newdata = test_clf_nb)
+
+cm_clf <- confusionMatrix(pred_clf, test_clf_nb$precio_cat3)
+print(cm_clf)
+```
+
+```{r metricas_clasificacion}
+acc_clf <- cm_clf$overall["Accuracy"]
+kap_clf <- cm_clf$overall["Kappa"]
+
+metricas_clf <- data.frame(
+  Clase     = rownames(cm_clf$byClass),
+  Precision = round(cm_clf$byClass[, "Precision"], 4),
+  Recall    = round(cm_clf$byClass[, "Recall"],    4),
+  F1        = round(cm_clf$byClass[, "F1"],        4)
+)
+
+cat("Accuracy:", round(acc_clf, 4), "\n")
+cat("Kappa:   ", round(kap_clf, 4), "\n\n")
+print(metricas_clf)
+```
+
+```{r cm_clasificacion_plot, fig.width=7, fig.height=5}
+cm_clf_df <- as.data.frame(cm_clf$table)
+colnames(cm_clf_df) <- c("Predicho", "Real", "Frecuencia")
+
+ggplot(cm_clf_df, aes(x = Real, y = Predicho, fill = Frecuencia)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Frecuencia), size = 6, fontface = "bold") +
+  scale_fill_gradient(low = "#e5f5e0", high = "#238b45") +
+  labs(title = "Matriz de Confusión - Clasificación Naive Bayes (3 clases)",
+       x = "Clase Real", y = "Clase Predicha") +
+  theme_minimal()
+```
+
+**Análisis del modelo de clasificación:**
+
+```{r analisis_clasificacion}
+cat("=== ANÁLISIS DE CLASIFICACIÓN ===\n\n")
+cat("Accuracy:", round(acc_clf, 4), "\n")
+cat("Kappa:   ", round(kap_clf, 4), "\n\n")
+
+mejor_clf <- metricas_clf$Clase[which.max(metricas_clf$F1)]
+peor_clf  <- metricas_clf$Clase[which.min(metricas_clf$F1)]
+cat("Clase mejor predicha:", mejor_clf, "(F1 =", max(metricas_clf$F1, na.rm=TRUE), ")\n")
+cat("Clase peor predicha: ", peor_clf,  "(F1 =", min(metricas_clf$F1, na.rm=TRUE), ")\n")
+```
+
+- Con **3 clases** el modelo de clasificación es más interpretable y útil para decisiones de negocio (ej. ¿es este alquiler barato, medio o caro?).
+- Un accuracy superior al 50% ya supera la predicción aleatoria en un problema de 3 clases.
+- La clase **Cara** suele tener mayor recall ya que las propiedades de lujo tienen atributos más distintivos (más habitaciones, mejor valoración, etc.).
+- La clase **Media** es la más difícil de predecir porque comparte características con los extremos.
+- Las métricas apropiadas para clasificación multiclase son **Accuracy**, **Kappa**, y **F1 macro-promediado**.
