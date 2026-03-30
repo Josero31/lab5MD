@@ -579,3 +579,62 @@ cat("Accuracy después:", round(cm_tune$overall["Accuracy"], 4), "\n")
 Se realizó un proceso de optimización de hiperparámetros utilizando validación cruzada de 5 folds. Se evaluaron distintas combinaciones de suavizado de Laplace (laplace), uso de kernel (usekernel) y ajuste del kernel (adjust).
 
 El mejor modelo se seleccionó automáticamente con base en el mayor accuracy promedio en validación cruzada. En este caso el accuracy era mejor antes que ahora, por lo que posiblemente haya un sobreajuste.
+
+# 10 Comparación con Árbol de Clasificación y Random Forest
+
+
+```{r}
+library(rpart)
+library(randomForest)
+
+modelo_tree_clf <- rpart(precio_cat3 ~ ., data = train_clf_nb, method = "class")
+
+pred_tree_clf <- predict(modelo_tree_clf, test_clf_nb, type = "class")
+cm_tree_clf <- confusionMatrix(pred_tree_clf, test_clf_nb$precio_cat3)
+
+set.seed(42)
+
+modelo_rf <- randomForest(precio_cat3 ~ ., data = train_clf_nb)
+
+pred_rf <- predict(modelo_rf, test_clf_nb)
+cm_rf <- confusionMatrix(pred_rf, test_clf_nb$precio_cat3)
+
+tabla_final <- data.frame(
+  Modelo = c("Naive Bayes", "Naive Bayes Tuned", "Árbol", "Random Forest"),
+  Accuracy = c(
+    acc_clf,
+    cm_tune$overall["Accuracy"],
+    cm_tree_clf$overall["Accuracy"],
+    cm_rf$overall["Accuracy"]
+  )
+)
+
+print(tabla_final)
+
+
+# Medir tiempos
+
+tiempo_nb <- system.time(
+  naiveBayes(precio_cat3 ~ ., data = train_clf_nb)
+)
+
+tiempo_rf <- system.time(
+  randomForest(precio_cat3 ~ ., data = train_clf_nb)
+)
+
+tiempo_tree <- system.time(
+  rpart(precio_cat3 ~ ., data = train_clf_nb)
+)
+
+cat("Tiempo Naive Bayes:", tiempo_nb[3], "seg\n")
+cat("Tiempo Árbol:", tiempo_tree[3], "seg\n")
+cat("Tiempo Random Forest:", tiempo_rf[3], "seg\n")
+```
+
+El modelo con mayor accuracy fue Random Forest. 
+Random Forest fue el más lento debido a que construye múltiples árboles. 
+Árbol de decisión tuvo un tiempo intermedio. 
+Naive Bayes fue el más rápido, ya que es un modelo probabilístico simple. 
+
+## Conclusion general
+El Naive Bayes es eficiente y rápido, pero su supuesto de independencia limita su precisión. El Random Forest ofrece el mejor desempeño predictivo, pero con mayor costo computacional. El árbol de decisión es un buen balance entre interpretabilidad y desempeño.
