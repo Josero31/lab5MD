@@ -17,14 +17,9 @@ library(caret)
 library(dplyr)
 library(ggplot2)
 
-# Cargar el RData y obtener el objeto sin importar su nombre
-objetos_antes <- ls()
+# Cargar el RData
 load("listings_limpio.RData")
-objetos_nuevo <- setdiff(ls(), c(objetos_antes, "objetos_antes"))
-cat("Objeto cargado:", objetos_nuevo, "\n")
-
-# Asignar a df directamente
-df <- get(objetos_nuevo[1])
+df <- listings
 
 # Ver estructura del dataset
 glimpse(df)
@@ -529,6 +524,182 @@ cat("porque el precio real y el predicho están en rangos cercanos.\n")
 - **Donde se equivocó menos:** La clase **Cara** suele tener mayor precision porque las propiedades de lujo tienen características más diferenciadas (mayor número de habitaciones, mejores reseñas, ubicaciones premium).
 
 - **Importancia de los errores:** Los errores entre clases **no adyacentes** (Barata ↔ Cara) son los más graves desde el punto de vista de negocio, ya que implican una estimación muy alejada de la realidad. Los errores entre clases **adyacentes** (Barata ↔ Media, Media ↔ Cara) son tolerables porque el modelo al menos ubica la propiedad en un rango cercano al correcto. Naive Bayes, al asumir independencia entre variables, tiende a cometer más errores de tipo adyacente que de tipo extremo, lo que lo hace relativamente seguro para este caso de uso.
+
+## 7. Análisis de Sobreajuste
+
+Para determinar si el modelo de Naive Bayes podría estar sobreajustado, se compara el desempeño en el conjunto de entrenamiento versus el conjunto de prueba. Si el accuracy en entrenamiento es significativamente mayor que en prueba, esto indica sobreajuste.
+
+```{r sobreajuste_clasificacion}
+# Predicción sobre el conjunto de ENTRENAMIENTO
+pred_train_clf <- predict(modelo_clf, newdata = train_clf_nb)
+cm_train_clf   <- confusionMatrix(pred_train_clf, train_clf_nb$precio_cat3)
+
+acc_train_clf <- cm_train_clf$overall["Accuracy"]
+kap_train_clf <- cm_train_clf$overall["Kappa"]
+
+cat("=== COMPARACIÓN ENTRENAMIENTO vs PRUEBA (Clasificación NB) ===\n\n")
+cat("Accuracy en entrenamiento:", round(acc_train_clf, 4), "\n")
+cat("Accuracy en prueba:       ", round(acc_clf, 4), "\n")
+cat("Diferencia:               ", round(acc_train_clf - acc_clf, 4), "\n\n")
+
+cat("Kappa en entrenamiento:   ", round(kap_train_clf, 4), "\n")
+cat("Kappa en prueba:          ", round(kap_clf, 4), "\n")
+cat("Diferencia:               ", round(kap_train_clf - kap_clf, 4), "\n\n")
+
+# Evaluar sobreajuste
+dif_acc <- acc_train_clf - acc_clf
+if (dif_acc > 0.05) {
+  cat("DIAGNÓSTICO: Hay indicios de sobreajuste (diferencia > 5%).\n")
+  cat("El modelo se desempeña notablemente mejor en entrenamiento que en prueba.\n")
+} else if (dif_acc > 0.02) {
+  cat("DIAGNÓSTICO: Leve diferencia entre train y test (2-5%).\n")
+  cat("Podría haber un sobreajuste leve, pero es tolerable.\n")
+} else {
+  cat("DIAGNÓSTICO: No hay evidencia de sobreajuste.\n")
+  cat("El modelo generaliza bien a datos no vistos.\n")
+}
+```
+
+```{r sobreajuste_regresion}
+# También evaluar sobreajuste en el modelo de regresión NB
+pred_train_nb_reg <- predict(modelo_nb, newdata = train_nb)
+cm_train_reg_nb   <- confusionMatrix(pred_train_nb_reg, train_nb$price_cat)
+
+acc_train_reg <- cm_train_reg_nb$overall["Accuracy"]
+
+cat("\n=== COMPARACIÓN ENTRENAMIENTO vs PRUEBA (Regresión NB discretizado) ===\n\n")
+cat("Accuracy en entrenamiento:", round(acc_train_reg, 4), "\n")
+cat("Accuracy en prueba:       ", round(accuracy, 4), "\n")
+cat("Diferencia:               ", round(acc_train_reg - accuracy, 4), "\n")
+```
+
+```{r sobreajuste_visual, fig.width=7, fig.height=4}
+# Gráfico comparativo train vs test
+df_sobreajuste <- data.frame(
+  Modelo   = rep(c("NB Clasificación (3 clases)", "NB Regresión (4 clases)"), each = 2),
+  Conjunto = rep(c("Entrenamiento", "Prueba"), 2),
+  Accuracy = c(acc_train_clf, acc_clf, acc_train_reg, accuracy)
+)
+
+ggplot(df_sobreajuste, aes(x = Modelo, y = Accuracy, fill = Conjunto)) +
+  geom_col(position = "dodge", width = 0.6) +
+  geom_text(aes(label = round(Accuracy, 3)),
+            position = position_dodge(width = 0.6), vjust = -0.3, size = 4) +
+  scale_fill_manual(values = c("Entrenamiento" = "#fc8d62", "Prueba" = "#66c2a5")) +
+  ylim(0, 1) +
+  labs(title = "Comparación de Accuracy: Entrenamiento vs Prueba",
+       subtitle = "Diferencias grandes indican sobreajuste",
+       x = NULL, y = "Accuracy") +
+  theme_minimal(base_size = 13)
+```
+
+**Análisis de sobreajuste:**
+
+- **Naive Bayes es un modelo con alta tendencia al underfitting** (subajuste), no al sobreajuste. Esto se debe a su supuesto fuerte de independencia condicional entre variables, lo que simplifica en exceso las relaciones reales entre los predictores.
+- Si la diferencia de accuracy entre entrenamiento y prueba es **menor a 2-3 puntos porcentuales**, el modelo generaliza correctamente y no hay sobreajuste.
+- Si la diferencia es **mayor a 5 puntos porcentuales**, habría que considerar reducir la cantidad de variables o usar técnicas de regularización (como suavizado de Laplace).
+- En modelos probabilísticos como Naive Bayes, el riesgo principal no es memorizar los datos de entrenamiento, sino **no capturar relaciones complejas** que otros modelos (como Random Forest) sí detectan.
+- En conclusión, Naive Bayes es poco propenso al sobreajuste dado su sesgo inductivo fuerte. El modelo es estable pero limitado en su capacidad de captura de patrones complejos.
+
+---
+
+## 8. Validación Cruzada
+
+Se entrena un nuevo modelo de clasificación Naive Bayes utilizando **validación cruzada de 10 folds** para obtener una estimación más robusta del desempeño. Luego se comparan los resultados con el modelo anterior (split simple 70/30).
+
+```{r validacion_cruzada}
+# Configurar validación cruzada con 10 folds
+ctrl_cv <- trainControl(method = "cv", number = 10)
+
+# Dataset completo para CV (mismo que el de clasificación)
+df_cv <- df %>%
+  select(all_of(c(vars_modelo, "precio_cat3"))) %>%
+  na.omit()
+
+cat("Observaciones para validación cruzada:", nrow(df_cv), "\n\n")
+
+# Entrenar con caret + validación cruzada
+set.seed(42)
+modelo_nb_cv <- train(
+  precio_cat3 ~ .,
+  data      = df_cv,
+  method    = "naive_bayes",
+  trControl = ctrl_cv
+)
+
+print(modelo_nb_cv)
+```
+
+```{r resultados_cv}
+# Resultados de la validación cruzada
+cat("=== RESULTADOS DE VALIDACIÓN CRUZADA (10 folds) ===\n\n")
+
+# Accuracy promedio y desviación estándar
+acc_cv      <- max(modelo_nb_cv$results$Accuracy)
+acc_cv_sd   <- modelo_nb_cv$results$AccuracySD[which.max(modelo_nb_cv$results$Accuracy)]
+kap_cv      <- max(modelo_nb_cv$results$Kappa)
+kap_cv_sd   <- modelo_nb_cv$results$KappaSD[which.max(modelo_nb_cv$results$Kappa)]
+
+cat("Accuracy promedio (CV):", round(acc_cv, 4), "±", round(acc_cv_sd, 4), "\n")
+cat("Kappa promedio (CV):   ", round(kap_cv, 4), "±", round(kap_cv_sd, 4), "\n\n")
+
+# Comparación con modelo de split simple
+cat("=== COMPARACIÓN: SPLIT SIMPLE vs VALIDACIÓN CRUZADA ===\n\n")
+cat("Accuracy split 70/30:   ", round(acc_clf, 4), "\n")
+cat("Accuracy CV (10 folds): ", round(acc_cv, 4), "\n")
+cat("Diferencia:             ", round(acc_cv - acc_clf, 4), "\n\n")
+
+if (acc_cv > acc_clf) {
+  cat("La validación cruzada obtuvo MEJOR accuracy.\n")
+  cat("Esto sugiere que el split simple subestimaba el desempeño real del modelo.\n")
+} else if (abs(acc_cv - acc_clf) < 0.01) {
+  cat("Ambos métodos obtuvieron resultados MUY SIMILARES.\n")
+  cat("El modelo es estable y el split original era representativo.\n")
+} else {
+  cat("El split simple obtuvo MEJOR accuracy.\n")
+  cat("La CV da una estimación más conservadora y confiable del desempeño real.\n")
+}
+```
+
+```{r cv_por_fold, fig.width=8, fig.height=4}
+# Visualizar resultados por fold
+resamp <- modelo_nb_cv$resample
+
+ggplot(resamp, aes(x = reorder(Resample, Accuracy), y = Accuracy)) +
+  geom_col(fill = "#7570b3", width = 0.7) +
+  geom_hline(yintercept = acc_cv, linetype = "dashed", color = "red", linewidth = 0.8) +
+  geom_hline(yintercept = acc_clf, linetype = "dotted", color = "blue", linewidth = 0.8) +
+  annotate("text", x = 1, y = acc_cv + 0.01, label = paste("Media CV:", round(acc_cv, 3)),
+           color = "red", hjust = 0, size = 3.5) +
+  annotate("text", x = 1, y = acc_clf - 0.01, label = paste("Split 70/30:", round(acc_clf, 3)),
+           color = "blue", hjust = 0, size = 3.5) +
+  labs(title = "Accuracy por Fold - Validación Cruzada (10 folds)",
+       subtitle = "Línea roja = media CV | Línea azul = split simple",
+       x = "Fold", y = "Accuracy") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r comparacion_final_cv}
+# Tabla resumen comparativa
+tabla_cv <- data.frame(
+  Metodo       = c("Split simple (70/30)", "Validación Cruzada (10 folds)"),
+  Accuracy     = round(c(acc_clf, acc_cv), 4),
+  Kappa        = round(c(kap_clf, kap_cv), 4),
+  Variabilidad = c("N/A (un solo split)", paste0("±", round(acc_cv_sd, 4)))
+)
+print(tabla_cv)
+```
+
+**Análisis de la validación cruzada:**
+
+- La **validación cruzada de 10 folds** proporciona una estimación más robusta del desempeño real del modelo, ya que evalúa el modelo en 10 particiones diferentes del dataset, reduciendo la dependencia de un solo split arbitrario.
+- La **desviación estándar** del accuracy entre folds indica qué tan estable es el modelo: una SD baja (< 0.03) significa que el modelo se comporta de manera consistente sin importar qué datos se usen para entrenamiento y prueba.
+- Si los resultados de CV son similares al split simple, esto confirma que el modelo original no estaba ni sobreajustado ni dependía de un split particularmente favorable.
+- La validación cruzada es el estándar en minería de datos para evaluar modelos, ya que **utiliza todos los datos tanto para entrenamiento como para prueba** (cada observación aparece exactamente una vez en un fold de prueba).
+- En cuanto a cuál método "funcionó mejor": la validación cruzada no necesariamente produce un accuracy más alto, sino una **estimación más confiable** del desempeño del modelo en datos no vistos.
+
+---
 
 # 9 Tuneo de hiperparámetros (Regresión y Clasificación)
 
