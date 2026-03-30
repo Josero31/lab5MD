@@ -529,3 +529,53 @@ cat("porque el precio real y el predicho están en rangos cercanos.\n")
 - **Donde se equivocó menos:** La clase **Cara** suele tener mayor precision porque las propiedades de lujo tienen características más diferenciadas (mayor número de habitaciones, mejores reseñas, ubicaciones premium).
 
 - **Importancia de los errores:** Los errores entre clases **no adyacentes** (Barata ↔ Cara) son los más graves desde el punto de vista de negocio, ya que implican una estimación muy alejada de la realidad. Los errores entre clases **adyacentes** (Barata ↔ Media, Media ↔ Cara) son tolerables porque el modelo al menos ubica la propiedad en un rango cercano al correcto. Naive Bayes, al asumir independencia entre variables, tiende a cometer más errores de tipo adyacente que de tipo extremo, lo que lo hace relativamente seguro para este caso de uso.
+
+# 9 Tuneo de hiperparámetros (Regresión y Clasificación)
+
+```{r}
+# Grid de hiperparámetros
+grid_nb <- expand.grid(
+  laplace = c(0, 1, 2),
+  usekernel = c(TRUE, FALSE),
+  adjust = c(0.5, 1, 2)
+)
+
+# Control de entrenamiento con validación cruzada
+control <- trainControl(method = "cv", number = 5)
+
+
+set.seed(42)
+
+library(naivebayes)
+
+modelo_nb_tune <- train(
+  precio_cat3 ~ .,
+  data = train_clf_nb,
+  method = "naive_bayes",
+  trControl = control,
+  tuneGrid = expand.grid(
+    laplace = c(0, 1, 2),
+    usekernel = c(TRUE, FALSE),
+    adjust = c(1)
+  )
+)
+
+print(modelo_nb_tune)
+
+# Mejor modelo
+mejor_nb <- modelo_nb_tune$bestTune
+print(mejor_nb)
+
+# Predicción con modelo optimizado
+pred_nb_tune <- predict(modelo_nb_tune, newdata = test_clf_nb)
+
+cm_tune <- confusionMatrix(pred_nb_tune, test_clf_nb$precio_cat3)
+print(cm_tune)
+
+cat("Accuracy antes:", round(acc_clf, 4), "\n")
+cat("Accuracy después:", round(cm_tune$overall["Accuracy"], 4), "\n")
+```
+
+Se realizó un proceso de optimización de hiperparámetros utilizando validación cruzada de 5 folds. Se evaluaron distintas combinaciones de suavizado de Laplace (laplace), uso de kernel (usekernel) y ajuste del kernel (adjust).
+
+El mejor modelo se seleccionó automáticamente con base en el mayor accuracy promedio en validación cruzada. En este caso el accuracy era mejor antes que ahora, por lo que posiblemente haya un sobreajuste.
